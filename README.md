@@ -71,7 +71,7 @@ Generates pseudo-underwater images from SUNRGBD samples.
 ### 2. Train UWNet via Distillation
 
 ```bash
-python train_preprocessed.py \
+python train.py \
   --sun_root /path/to/SUNRGBD \
   --pseudo_dir pseudo_images \
   --epochs 150 \
