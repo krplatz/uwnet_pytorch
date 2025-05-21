@@ -1,4 +1,4 @@
-# train_preprocessed.py
+# train.py
 import torch
 import torch.optim
 import torch.nn as nn
@@ -10,8 +10,18 @@ from data.paired_dataloader import get_paired_dataloader
 from utils.losses import distillation_loss
 import os
 import matplotlib.pyplot as plt
+import argparse
 
 def main():
+    parser = argparse.ArgumentParser(description="Train UWNet model with distillation.")
+    parser.add_argument('--sun_root', type=str, default="../SUNRGBD", help="Path to the SUNRGBD dataset root directory")
+    parser.add_argument('--pseudo_dir', type=str, default="pseudo_images", help="Path to the directory containing pseudo-underwater images")
+    parser.add_argument('--superpoint_path', type=str, default="SuperPointPretrainedNetwork/superpoint_v1.pth", help="Path to SuperPoint pretrained weights .pth file")
+    parser.add_argument('--epochs', type=int, default=150, help="Number of training epochs.")
+    parser.add_argument('--batch_size', type=int, default=16, help="Training batch size.")
+    parser.add_argument('--lr', type=float, default=0.003, help="Learning rate for RMSprop optimizer.")
+    args = parser.parse_args()
+
     if torch.cuda.is_available():
         device = "cuda"
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
@@ -24,16 +34,25 @@ def main():
             return
     
     # 1) TEACHER with SuperPoint
-    superpoint_path = "SuperPointPretrainedNetwork/superpoint_v1.pth"
+    superpoint_path = args.superpoint_path
     if not os.path.exists(superpoint_path):
         print(f"Warning: SuperPoint weights not found at {superpoint_path}")
         print("Searching for weights file...")
+        # Try to find it in the current directory or subdirectories as a fallback
+        found_superpoint = False
         for root, dirs, files in os.walk("."):
             for file in files:
                 if file.endswith(".pth") and "superpoint" in file.lower():
                     superpoint_path = os.path.join(root, file)
                     print(f"Found potential weights file: {superpoint_path}")
-    
+                    found_superpoint = True
+                    break
+            if found_superpoint:
+                break
+        if not found_superpoint:
+            print(f"Could not find SuperPoint weights. Please check the path: {args.superpoint_path} or place them in the working directory.")
+            return
+
     print(f"Loading teacher model with weights from: {superpoint_path}")
     try:
         teacher = TeacherModel(
@@ -55,17 +74,17 @@ def main():
     
     # 3) Data
     print("Loading datasets")
-    sun_root = "../SUNRGBD"
+    sun_root = args.sun_root
     if not os.path.exists(sun_root):
-        sun_root = input(f"SUNRGBD dataset not found at {sun_root}. Please enter the correct path: ")
+        sun_root = input(f"SUNRGBD dataset not found at {sun_root} (from --sun_root argument). Please enter the correct path: ")
     
-    pseudo_dir = "pseudo_images"
+    pseudo_dir = args.pseudo_dir
     if not os.path.exists(pseudo_dir):
-        pseudo_dir = input(f"Pseudo-underwater images not found at {pseudo_dir}. Please enter the correct path: ")
+        pseudo_dir = input(f"Pseudo-underwater images not found at {pseudo_dir} (from --pseudo_dir argument). Please enter the correct path: ")
     
     try:
         # Use the paired dataloader to ensure correspondence
-        paired_loader = get_paired_dataloader(sun_root, pseudo_dir, batch_size=16, shuffle=True, max_samples=500)
+        paired_loader = get_paired_dataloader(sun_root, pseudo_dir, batch_size=args.batch_size, shuffle=True, max_samples=500)
         print(f"Loaded {len(paired_loader)} batches of paired air and pseudo images")
     except Exception as e:
         print(f"Error loading paired dataset: {e}")
@@ -78,8 +97,8 @@ def main():
     log_beta = nn.Parameter(torch.tensor(0.0, device=device))
     log_gamma = nn.Parameter(torch.tensor(0.0, device=device))
     print("Starting distillation training")
-    optimizer = torch.optim.RMSprop(list(student.parameters()) + [log_alpha, log_beta, log_gamma],lr=0.003)
-    epochs = 150
+    optimizer = torch.optim.RMSprop(list(student.parameters()) + [log_alpha, log_beta, log_gamma], lr=args.lr)
+    epochs = args.epochs
     
     # Training history for monitoring
     loss_history = []

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from torchvision.ops import DeformConv2d
+from models.netvlad import NetVLAD
 
 # --- Minimal DeformableConv2d Wrapper ---
 class DeformableConv2d(nn.Module):
@@ -69,39 +70,6 @@ class SpatialAttention(nn.Module):
         attn = self.sigmoid(self.conv(x_cat))
         return attn * x
 
-# --- Simplified NetVLAD Module ---
-class NetVLAD(nn.Module):
-    def __init__(self, num_clusters=64, dim=128):
-        super(NetVLAD, self).__init__()
-        self.num_clusters = num_clusters
-        self.dim = dim
-        self.conv = nn.Conv2d(dim, num_clusters, kernel_size=1, bias=True)
-        self.centroids = nn.Parameter(torch.rand(num_clusters, dim))
-    
-    def forward(self, x):
-        N, C, H, W = x.shape
-        # Flatten spatial dimensions
-        x_flat = x.view(N, C, -1)  # shape: (N, C, H*W)
-        
-        # Soft assignment
-        soft_assign = self.conv(x).view(N, self.num_clusters, -1)  # (N, num_clusters, H*W)
-        soft_assign = F.softmax(soft_assign, dim=1)
-        
-        x_flat_permute = x_flat.permute(0, 2, 1)  # (N, H*W, C)
-        
-        # Compute residuals to each centroid
-        residual = x_flat_permute.unsqueeze(1) - self.centroids.unsqueeze(0).unsqueeze(2)
-        # Weighted sum (Vlad)
-        vlad = (soft_assign.unsqueeze(-1) * residual).sum(dim=2)  # (N, num_clusters, dim)
-        
-        # Intra-normalize
-        vlad = F.normalize(vlad, p=2, dim=2)
-        # Flatten
-        vlad = vlad.view(N, -1)
-        # L2 normalize
-        vlad = F.normalize(vlad, p=2, dim=1)
-        return vlad
-
 # --- UWNet Architecture ---
 class UWNet(nn.Module):
     def __init__(self, descriptor_dim=256, global_dim=4096):
@@ -121,12 +89,10 @@ class UWNet(nn.Module):
         self.shared2 = nn.Sequential(*backbone[7:])  # remainder
 
         # 3) Figure out how many channels come out of shared1
-        #    We'll do a dummy pass on a small input
-        print("Running dummy pass to determine channel dimensions")
-        dummy = torch.zeros(1, 3, 64, 64)  # Smaller dummy tensor to save memory
-        with torch.no_grad():
-            out_dummy1 = self.shared1(dummy)
-        local_in_channels = out_dummy1.shape[1]  # e.g., might be 32 instead of 96
+        # Access the out_channels of the last layer in shared1
+        print("Determining channel dimensions from layer properties")
+        # The last layer of shared1 (models.mobilenet_v2().features[6]) is InvertedResidual
+        local_in_channels = self.shared1[-1].out_channels
         print(f"Local branch input channels: {local_in_channels}")
 
         # 4) Build local branch modules
@@ -152,9 +118,9 @@ class UWNet(nn.Module):
         )
 
         # 5) Figure out how many channels come out of shared2 for global branch
-        with torch.no_grad():
-            out_dummy2 = self.shared2(out_dummy1)
-        global_in_channels = out_dummy2.shape[1]  # e.g., might be 1280
+        # Access the out_channels of the last layer in shared2
+        # The last layer of shared2 (models.mobilenet_v2().features[18]) is InvertedResidual or ConvBNActivation
+        global_in_channels = self.shared2[-1].out_channels
         print(f"Global branch input channels: {global_in_channels}")
 
         # 6) Global branch
@@ -162,7 +128,6 @@ class UWNet(nn.Module):
         
         # 6a) Use our NetVLAD implementation
         try:
-            from models.netvlad import NetVLAD
             self.netvlad = NetVLAD(num_clusters=64, dim=128, normalize_input=True)
             self.fc_global = nn.Linear(64 * 128, global_dim)
             print("Initialized NetVLAD and global feature branch")
