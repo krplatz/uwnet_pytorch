@@ -70,7 +70,8 @@ def distillation_loss(student_global, teacher_global,
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
                 print(f"WARNING: {name} contains NaN or Inf values")
         
-        # Return a safe loss value to allow training to continue
-        return torch.tensor(0.1, device=device, requires_grad=True)
+        # Return a safe loss tensor on the same device as the inputs
+        safe_device = student_global.device
+        return torch.tensor(0.1, device=safe_device, requires_grad=True)
     
     return loss
